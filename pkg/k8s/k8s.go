@@ -4,6 +4,7 @@ package k8s
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"sync"
@@ -16,6 +17,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
@@ -249,4 +254,27 @@ func (s *NodeStore) Get(obj interface{}) (item interface{}, exists bool, err err
 }
 func (s *NodeStore) GetByKey(key string) (item interface{}, exists bool, err error) {
 	return nil, false, errors.New("unimplemented")
+}
+
+// WatchNodes connects to the k8s API server (using an in-cluster configuration if kubconfig and
+// master are empty), watches nodes until the provided context is finished, and publishes any
+// changes to the provided cache.Store.
+//
+// The provided watcher will be resync'd at a scheduled interval regardless of any changes if
+// resync is non-zero.
+func WatchNodes(ctx context.Context, master, kubeconfig string, resync time.Duration, store cache.Store) error {
+	config, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
+	if err != nil {
+		return fmt.Errorf("kubernetes: build config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("kubernetes: new client: %w", err)
+	}
+
+	lw := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", "", fields.Everything())
+	r := cache.NewReflector(lw, &v1.Node{}, store, resync)
+	r.Run(ctx.Done())
+	return nil
 }
