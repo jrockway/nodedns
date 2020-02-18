@@ -38,6 +38,13 @@ var (
 		},
 		[]string{"store"},
 	)
+	nodeExportedCount = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "node_exported_count",
+			Help: "The number of nodes that are currently being exported to DNS.",
+		},
+		[]string{"store"},
+	)
 )
 
 // Record is a DNS record that contains the full set of nodes.
@@ -101,6 +108,21 @@ func toNode(obj interface{}) Node {
 		return Node{}
 	}
 	result := Node{Name: n.GetName()}
+
+	// This is a subset of the functionality that k8s normally uses to decide whether to add
+	// nodes to services.  See
+	// https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/service/controller.go#getNodeConditionPredicate.
+	if n.Spec.Unschedulable {
+		zap.L().Debug("node not considered for dns, marked unschedulable", zap.String("node", n.GetName()))
+		return result
+	}
+	for _, cond := range n.Status.Conditions {
+		if cond.Type == v1.NodeReady && cond.Status != v1.ConditionTrue {
+			zap.L().Debug("node not considered for dns, not ready", zap.String("node", n.GetName()))
+			return result
+		}
+	}
+
 	for _, addr := range n.Status.Addresses {
 		parsed := net.ParseIP(addr.Address)
 		switch addr.Type {
@@ -154,9 +176,20 @@ func cleanupRecord(r *Record) {
 func (s *NodeStore) mutateNodes(f func(*map[string]Node)) []Record {
 	s.Lock()
 	defer s.Unlock()
+
 	beforeInternal, beforeExternal := s.externalRecord(), s.internalRecord()
+
 	f(&s.nodes)
+
 	nodeCount.WithLabelValues(s.Name).Set(float64(len(s.nodes)))
+	var nOk int
+	for _, n := range s.nodes {
+		if len(n.External)+len(n.Internal) > 0 {
+			nOk++
+		}
+	}
+	nodeExportedCount.WithLabelValues(s.Name).Set(float64(nOk))
+
 	afterInternal, afterExternal := s.externalRecord(), s.internalRecord()
 
 	var result []Record
