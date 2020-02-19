@@ -17,6 +17,8 @@ func TestCache(t *testing.T) {
 	zap.ReplaceGlobals(l)
 	ns := NewNodeStore("test")
 	ns.Timeout = time.Second
+	ch := make(chan UpdateRequest)
+	ns.OnChange = func(req UpdateRequest) { ch <- req }
 	readNext := func(n int) []Record {
 		t.Helper()
 		var result []Record
@@ -25,7 +27,7 @@ func TestCache(t *testing.T) {
 			select {
 			case <-a:
 				t.Fatalf("channel read timed out waiting for item %d", i)
-			case req := <-ns.Ch:
+			case req := <-ch:
 				result = append(result, req.Record)
 			}
 		}
@@ -97,7 +99,7 @@ func TestCache(t *testing.T) {
 		},
 	})
 	select {
-	case <-ns.Ch:
+	case <-ch:
 		t.Fatal("unexpected update")
 	case <-time.After(100 * time.Millisecond):
 		// This is not an ideal test, but if there really was a write here we'll eventually

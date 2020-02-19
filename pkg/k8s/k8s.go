@@ -70,16 +70,16 @@ type Node struct {
 // of changes.
 type NodeStore struct {
 	sync.Mutex
-	Name    string             // The name of the NodeStore, for observability (logging, metrics, tracing).
-	Timeout time.Duration      // How long to block (worst case) on events.
-	Ch      chan UpdateRequest // A channel that will emit the full desired DNS record.
-	Logger  *zap.Logger
-	nodes   map[string]Node // The nodes, a map from hostname to information about that host.
+	Name     string              // The name of the NodeStore, for observability (logging, metrics, tracing).
+	Timeout  time.Duration       // How long to block (worst case) on events.
+	OnChange func(UpdateRequest) // A function that will be called whenever DNS records change.
+	Logger   *zap.Logger
+	nodes    map[string]Node // The nodes, a map from hostname to information about that host.
 }
 
 // NewNodeStore returns an initialized NodeStore.
 func NewNodeStore(name string) *NodeStore {
-	return &NodeStore{Name: name, Timeout: 10 * time.Second, Ch: make(chan UpdateRequest), Logger: zap.L().Named(name), nodes: make(map[string]Node)}
+	return &NodeStore{Name: name, Timeout: 10 * time.Second, Logger: zap.L().Named(name), nodes: make(map[string]Node)}
 }
 
 func (s *NodeStore) startOp(opName string) (context.Context, func()) {
@@ -202,18 +202,10 @@ func (s *NodeStore) mutateNodes(f func(*map[string]Node)) []Record {
 	return result
 }
 
-// notify sends an update request to the notification channel.  Because the actual update happens
-// asyncronously, we can't tell if it worked or not.  We also can't really apply backpressure when
-// the context times out; Kubernetes is not going to stop adding or removing nodes because we are
-// slow at updating the DNS.
 func (s *NodeStore) notify(ctx context.Context, changes []Record) {
 	for _, change := range changes {
 		span, ctx := opentracing.StartSpanFromContext(ctx, "update_dns")
-		select {
-		case s.Ch <- UpdateRequest{Ctx: ctx, Record: change}:
-		case <-ctx.Done():
-			ext.Error.Set(span, true)
-		}
+		s.OnChange(UpdateRequest{Ctx: ctx, Record: change})
 		span.Finish()
 	}
 }
