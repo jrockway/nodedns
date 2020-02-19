@@ -1,0 +1,11 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+    name: nodedns
+spec:
+    selector:
+        matchLabels:
+            app: nodedns
+    podMetricsEndpoints:
+        - port: debug
+          path: /metrics

@@ -1,0 +1,8 @@
+namespace: kube-system
+commonLabels:
+    app: nodedns
+resources:
+    - deployment.yaml
+    - clusterrole.yaml
+    - clusterrolebinding.yaml
+    - podmonitor.yaml

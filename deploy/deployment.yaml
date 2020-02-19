@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: nodedns
+    annotations:
+        "sidecar.jaegertracing.io/inject": "jaeger"
+spec:
+    replicas: 1
+    template:
+        spec:
+            containers:
+                - name: nodedns
+                  image: nodedns
+                  env:
+                      - name: JAEGER_SERVICE_NAME
+                        value: nodedns
+                      - name: JAEGER_SAMPLER_TYPE
+                        value: const
+                      - name: JAEGER_SAMPLER_PARAM
+                        value: "1"
+                      - name: DEBUG_ADDRESS
+                        value: "0.0.0.0:8081"
+                      - name: RESYNC_INTERVAL
+                        value: 300s
+                      - name: DIGITALOCEAN_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: nodedns-digitalocean-token
+                                key: token
+                      - name: DNS_ZONE
+                        value: "invalid"
+                      - name: DNS_TTL
+                        value: "60s"
+                      - name: INTERNAL_DOMAIN
+                        value: "nodes-internal"
+                      - name: EXTERNAL_DOMAIN
+                        value: "nodes"
+                  readinessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: debug
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: debug
+                  ports:
+                      - name: debug
+                        containerPort: 8081
