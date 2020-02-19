@@ -27,14 +27,6 @@ spec:
                             secretKeyRef:
                                 name: nodedns-digitalocean-token
                                 key: token
-                      - name: DNS_ZONE
-                        value: "invalid"
-                      - name: DNS_TTL
-                        value: "60s"
-                      - name: INTERNAL_DOMAIN
-                        value: "nodes-internal"
-                      - name: EXTERNAL_DOMAIN
-                        value: "nodes"
                   readinessProbe:
                       httpGet:
                           path: /healthz
