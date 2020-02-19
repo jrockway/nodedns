@@ -48,7 +48,7 @@ func main() {
 		} else {
 			zap.L().Info("current external addresses", zap.Any("addresses", ips))
 			if !ndf.IsDryRun {
-				err = dnsCfg.UpdateDNS(req.Ctx, ndf.Internal, ips)
+				err = dnsCfg.UpdateDNS(req.Ctx, ndf.External, ips)
 			}
 		}
 		if ndf.IsDryRun {
