@@ -130,7 +130,7 @@ func (c *Config) UpdateDNS(ctx context.Context, record string, addresses []net.I
 	if record == "" {
 		return nil
 	}
-	span, ctx := opentracing.StartSpanFromContext(ctx, "digitalocean-dns-update")
+	span, ctx := opentracing.StartSpanFromContext(ctx, "digitalocean_dns_update")
 	defer span.Finish()
 	dnsUpdateAttempts.WithLabelValues("digitalocean", c.Zone, record).Inc()
 
