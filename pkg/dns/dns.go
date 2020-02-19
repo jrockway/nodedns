@@ -22,24 +22,41 @@ var (
 	dnsUpdateAttempts = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dns_update_attempts",
-			Help: "number of attempts to update dns",
+			Help: "The number of attempts to update DNS.",
 		},
 		[]string{"provider", "zone", "record"},
 	)
 	dnsUpdatedOK = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dns_update_success",
-			Help: "number of attempts to update dns that ended in succcess",
+			Help: "The number of attempts to update DNS that ended in succcess.",
 		},
 		[]string{"provider", "zone", "record"},
 	)
 	doRequestsRemaining = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "digitalocean_requests_remaining",
-			Help: "number of API requests remaining on the digitalocean client",
+			Help: "The number of API requests remaining on the DigitalOcean client.",
 		},
 	)
 )
+
+// transport is an http.RoundTripper that forces nethttp to trace, even when we can't get at the
+// request explicitly.
+type transport struct {
+	http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *transport) RoundTrip(orig *http.Request) (*http.Response, error) {
+	rt := t.RoundTripper
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	req, tr := nethttp.TraceRequest(opentracing.GlobalTracer(), orig)
+	defer tr.Finish()
+	return rt.RoundTrip(req)
+}
 
 // Config is configuration for the DigitalOcean client that will update records.
 type Config struct {
@@ -60,7 +77,7 @@ func (c *Config) Token() (*oauth2.Token, error) {
 }
 
 func (c *Config) doClient(ctx context.Context) *godo.Client {
-	httpClient := &http.Client{Transport: &nethttp.Transport{}}
+	httpClient := &http.Client{Transport: &transport{RoundTripper: &nethttp.Transport{}}}
 	cctx := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	oauthClient := oauth2.NewClient(cctx, c)
 	return godo.NewClient(oauthClient)

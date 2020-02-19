@@ -85,7 +85,7 @@ func NewNodeStore(name string) *NodeStore {
 func (s *NodeStore) startOp(opName string) (context.Context, func()) {
 	nodeChangeEvents.WithLabelValues(s.Name, opName).Inc()
 	tctx, c := context.WithTimeout(context.Background(), s.Timeout)
-	span := opentracing.StartSpan("node-change")
+	span := opentracing.StartSpan("reflector." + opName)
 	ctx := opentracing.ContextWithSpan(tctx, span)
 
 	return ctx, func() {
@@ -203,8 +203,14 @@ func (s *NodeStore) mutateNodes(f func(*map[string]Node)) []Record {
 }
 
 func (s *NodeStore) notify(ctx context.Context, changes []Record) {
+	opentracing.SpanFromContext(ctx).SetTag("entries.changed", len(changes))
 	for _, change := range changes {
-		span, ctx := opentracing.StartSpanFromContext(ctx, "update_dns")
+		span, ctx := opentracing.StartSpanFromContext(ctx, "notify_dns")
+		kind := "external"
+		if change.IsInternal {
+			kind = "internal"
+		}
+		span.SetTag("dns.type", kind)
 		s.OnChange(UpdateRequest{Ctx: ctx, Record: change})
 		span.Finish()
 	}
