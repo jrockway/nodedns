@@ -20,13 +20,6 @@ spec:
                         value: "1"
                       - name: DEBUG_ADDRESS
                         value: "0.0.0.0:8081"
-                      - name: RESYNC_INTERVAL
-                        value: 300s
-                      - name: DIGITALOCEAN_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: nodedns-digitalocean-token
-                                key: token
                   readinessProbe:
                       httpGet:
                           path: /healthz
