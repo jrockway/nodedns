@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/digitalocean/godo"
@@ -33,6 +34,20 @@ var (
 		},
 		[]string{"provider", "zone", "record"},
 	)
+	dnsRecordsCreated = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_records_created",
+			Help: "The number of A/AAAA records added to DNS.",
+		},
+		[]string{"provider", "zone", "record"},
+	)
+	dnsRecordsDeleted = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_records_deleted",
+			Help: "The number of A/AAAA records removed from DNS.",
+		},
+		[]string{"provider", "zone", "record"},
+	)
 	doRequestsRemaining = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "digitalocean_requests_remaining",
@@ -40,23 +55,6 @@ var (
 		},
 	)
 )
-
-// transport is an http.RoundTripper that forces nethttp to trace, even when we can't get at the
-// request explicitly.
-type transport struct {
-	http.RoundTripper
-}
-
-// RoundTrip implements http.RoundTripper.
-func (t *transport) RoundTrip(orig *http.Request) (*http.Response, error) {
-	rt := t.RoundTripper
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	req, tr := nethttp.TraceRequest(opentracing.GlobalTracer(), orig)
-	defer tr.Finish()
-	return rt.RoundTrip(req)
-}
 
 // Config is configuration for the DigitalOcean client that will update records.
 type Config struct {
@@ -68,25 +66,43 @@ type Config struct {
 	TTL time.Duration `long:"ttl" env:"DNS_TTL" description:"The TTL to apply to newly-created records." default:"60s"`
 }
 
-// Token implements oauth2.TokenSource.
-func (c *Config) Token() (*oauth2.Token, error) {
-	token := &oauth2.Token{
-		AccessToken: c.PAToken,
-	}
-	return token, nil
+// transport is an http.RoundTripper that adds the DO token to each request, and traces the request
+// with opentracing.
+type transport struct {
+	Token            *oauth2.Token
+	nethttpTransport *nethttp.Transport
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *transport) RoundTrip(orig *http.Request) (*http.Response, error) {
+	req, tr := nethttp.TraceRequest(opentracing.GlobalTracer(), orig)
+	t.Token.SetAuthHeader(req)
+	defer tr.Finish()
+	return t.nethttpTransport.RoundTrip(req)
 }
 
 func (c *Config) doClient(ctx context.Context) *godo.Client {
-	httpClient := &http.Client{Transport: &transport{RoundTripper: &nethttp.Transport{}}}
-	cctx := context.WithValue(ctx, oauth2.HTTPClient, httpClient)
-	oauthClient := oauth2.NewClient(cctx, c)
-	return godo.NewClient(oauthClient)
-}
-
-func updateDoRateLimitMetric(res *godo.Response) {
-	if res != nil && res.Rate.Limit > 0 {
-		doRequestsRemaining.Set(float64(res.Rate.Remaining))
+	httpClient := &http.Client{
+		Transport: &transport{
+			Token: &oauth2.Token{
+				AccessToken: c.PAToken,
+			},
+			nethttpTransport: &nethttp.Transport{},
+		},
 	}
+	godoClient := godo.NewClient(httpClient)
+	godoClient.OnRequestCompleted(func(req *http.Request, res *http.Response) {
+		if res == nil {
+			return
+		}
+		if remaining := res.Header.Get("RateLimit-Remaining"); remaining != "" {
+			val, err := strconv.Atoi(remaining)
+			if err == nil {
+				doRequestsRemaining.Set(float64(val))
+			}
+		}
+	})
+	return godoClient
 }
 
 func (c *Config) getRecords(ctx context.Context, client *godo.Client, name string) (map[string]int, error) {
@@ -96,7 +112,6 @@ func (c *Config) getRecords(ctx context.Context, client *godo.Client, name strin
 			Page:    page,
 			PerPage: 100,
 		})
-		updateDoRateLimitMetric(res)
 		if err != nil {
 			return nil, fmt.Errorf("get page %d of records for domain %s: %v", page, c.Zone, err)
 		}
@@ -157,32 +172,33 @@ func (c *Config) UpdateDNS(ctx context.Context, record string, addresses []net.I
 		return fmt.Errorf("get existing records: %v", err)
 	}
 	toDelete, toCreate, toDeleteAddrs := diffDNS(addresses, existing)
-	zap.L().Named("digitalocean-dns").Debug("dns changes needed", zap.Any("to_create", toCreate), zap.Strings("to_delete", toDeleteAddrs))
+	if len(toDelete) > 0 || len(toCreate) > 0 {
+		zap.L().Named("digitalocean-dns").Debug("dns changes needed", zap.Any("to_create", toCreate), zap.Strings("to_delete", toDeleteAddrs))
+	}
 
 	for _, ip := range toCreate {
 		kind := "A"
 		if ip.To4() == nil {
 			kind = "AAAA"
 		}
-		rec, res, err := cl.Domains.CreateRecord(ctx, c.Zone, &godo.DomainRecordEditRequest{
+		_, _, err := cl.Domains.CreateRecord(ctx, c.Zone, &godo.DomainRecordEditRequest{
 			Name: record,
 			Data: ip.String(),
 			TTL:  int(c.TTL.Round(time.Second).Seconds()),
 			Type: kind,
 		})
-		updateDoRateLimitMetric(res)
 		if err != nil {
 			return fmt.Errorf("creating record %s %s: %v", kind, ip.String(), err)
 		}
-		zap.L().Debug("created record", zap.Any("record", rec), zap.Any("response", res))
+		dnsRecordsCreated.WithLabelValues("digitalocean", c.Zone, record).Inc()
+		zap.L().Debug("created record")
 	}
 	for _, id := range toDelete {
-		res, err := cl.Domains.DeleteRecord(ctx, c.Zone, id)
-		updateDoRateLimitMetric(res)
-		if err != nil {
+		if _, err := cl.Domains.DeleteRecord(ctx, c.Zone, id); err != nil {
 			return fmt.Errorf("deleting record id %d: %v", id, err)
 		}
-		zap.L().Debug("deleted record", zap.Any("response", res))
+		dnsRecordsDeleted.WithLabelValues("digitalocean", c.Zone, record).Inc()
+		zap.L().Debug("deleted record")
 	}
 
 	dnsUpdatedOK.WithLabelValues("digitalocean", c.Zone, record).Inc()
