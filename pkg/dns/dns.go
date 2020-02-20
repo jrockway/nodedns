@@ -81,7 +81,15 @@ func (t *transport) RoundTrip(orig *http.Request) (*http.Response, error) {
 	return t.nethttpTransport.RoundTrip(req)
 }
 
-func (c *Config) doClient(ctx context.Context) *godo.Client {
+// Client is a DigitalOcean API client configured to use opentracing.
+type Client struct {
+	c    *godo.Client
+	zone string
+	ttl  time.Duration
+}
+
+// NewClient creates a new DigitalOcean API client and checks that it works.
+func NewClient(ctx context.Context, c *Config) (*Client, error) {
 	httpClient := &http.Client{
 		Transport: &transport{
 			Token: &oauth2.Token{
@@ -102,18 +110,33 @@ func (c *Config) doClient(ctx context.Context) *godo.Client {
 			}
 		}
 	})
-	return godoClient
+	domains, _, err := godoClient.Domains.List(ctx, &godo.ListOptions{PerPage: 100})
+	if err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+	var found bool
+	for _, d := range domains {
+		if d.Name == c.Zone {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("no domain named %q found", c.Zone)
+	}
+
+	return &Client{c: godoClient, zone: c.Zone, ttl: c.TTL}, nil
 }
 
-func (c *Config) getRecords(ctx context.Context, client *godo.Client, name string) (map[string]int, error) {
+func (c *Client) getRecords(ctx context.Context, name string) (map[string]int, error) {
 	result := make(map[string]int)
 	for page := 0; page < 100; page++ {
-		recs, res, err := client.Domains.Records(ctx, c.Zone, &godo.ListOptions{
+		recs, res, err := c.c.Domains.Records(ctx, c.zone, &godo.ListOptions{
 			Page:    page,
 			PerPage: 100,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("get page %d of records for domain %s: %v", page, c.Zone, err)
+			return nil, fmt.Errorf("get page %d of records for domain %s: %w", page, c.zone, err)
 		}
 		for _, rec := range recs {
 			if (rec.Type == "A" || rec.Type == "AAAA") && rec.Name == name {
@@ -158,18 +181,17 @@ func diffDNS(desired []net.IP, existing map[string]int) ([]int, []net.IP, []stri
 	return toDelete, toCreate, toDeleteAddrs
 }
 
-func (c *Config) UpdateDNS(ctx context.Context, record string, addresses []net.IP) error {
+func (c *Client) UpdateDNS(ctx context.Context, record string, addresses []net.IP) error {
 	if record == "" {
 		return nil
 	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "digitalocean_dns_update")
 	defer span.Finish()
-	dnsUpdateAttempts.WithLabelValues("digitalocean", c.Zone, record).Inc()
+	dnsUpdateAttempts.WithLabelValues("digitalocean", c.zone, record).Inc()
 
-	cl := c.doClient(ctx)
-	existing, err := c.getRecords(ctx, cl, record)
+	existing, err := c.getRecords(ctx, record)
 	if err != nil {
-		return fmt.Errorf("get existing records: %v", err)
+		return fmt.Errorf("get existing records: %w", err)
 	}
 	toDelete, toCreate, toDeleteAddrs := diffDNS(addresses, existing)
 	if len(toDelete) > 0 || len(toCreate) > 0 {
@@ -181,26 +203,26 @@ func (c *Config) UpdateDNS(ctx context.Context, record string, addresses []net.I
 		if ip.To4() == nil {
 			kind = "AAAA"
 		}
-		_, _, err := cl.Domains.CreateRecord(ctx, c.Zone, &godo.DomainRecordEditRequest{
+		_, _, err := c.c.Domains.CreateRecord(ctx, c.zone, &godo.DomainRecordEditRequest{
 			Name: record,
 			Data: ip.String(),
-			TTL:  int(c.TTL.Round(time.Second).Seconds()),
+			TTL:  int(c.ttl.Round(time.Second).Seconds()),
 			Type: kind,
 		})
 		if err != nil {
-			return fmt.Errorf("creating record %s %s: %v", kind, ip.String(), err)
+			return fmt.Errorf("creating record %s %s: %w", kind, ip.String(), err)
 		}
-		dnsRecordsCreated.WithLabelValues("digitalocean", c.Zone, record).Inc()
+		dnsRecordsCreated.WithLabelValues("digitalocean", c.zone, record).Inc()
 		zap.L().Debug("created record")
 	}
 	for _, id := range toDelete {
-		if _, err := cl.Domains.DeleteRecord(ctx, c.Zone, id); err != nil {
-			return fmt.Errorf("deleting record id %d: %v", id, err)
+		if _, err := c.c.Domains.DeleteRecord(ctx, c.zone, id); err != nil {
+			return fmt.Errorf("deleting record id %d: %w", id, err)
 		}
-		dnsRecordsDeleted.WithLabelValues("digitalocean", c.Zone, record).Inc()
+		dnsRecordsDeleted.WithLabelValues("digitalocean", c.zone, record).Inc()
 		zap.L().Debug("deleted record")
 	}
 
-	dnsUpdatedOK.WithLabelValues("digitalocean", c.Zone, record).Inc()
+	dnsUpdatedOK.WithLabelValues("digitalocean", c.zone, record).Inc()
 	return nil
 }

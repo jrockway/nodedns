@@ -36,6 +36,13 @@ func main() {
 	server.AddFlagGroup("NodeDNS", ndf)
 	server.Setup()
 
+	tctx, c := context.WithTimeout(context.Background(), 10*time.Second)
+	dnsClient, err := dns.NewClient(tctx, dnsCfg)
+	c()
+	if err != nil {
+		zap.L().Fatal("problem initializing DigitalOcean client", zap.Error(err))
+	}
+
 	ns := k8s.NewNodeStore("main")
 	ns.OnChange = func(req k8s.UpdateRequest) {
 		var err error
@@ -43,12 +50,12 @@ func main() {
 		if req.Record.IsInternal {
 			zap.L().Info("current internal addresses", zap.Any("addresses", ips))
 			if !ndf.IsDryRun {
-				err = dnsCfg.UpdateDNS(req.Ctx, ndf.Internal, ips)
+				err = dnsClient.UpdateDNS(req.Ctx, ndf.Internal, ips)
 			}
 		} else {
 			zap.L().Info("current external addresses", zap.Any("addresses", ips))
 			if !ndf.IsDryRun {
-				err = dnsCfg.UpdateDNS(req.Ctx, ndf.External, ips)
+				err = dnsClient.UpdateDNS(req.Ctx, ndf.External, ips)
 			}
 		}
 		if ndf.IsDryRun {
@@ -59,8 +66,8 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
 	go func() {
+		ctx := context.Background()
 		if err := k8s.WatchNodes(ctx, kf.Master, kf.Kubeconfig, ndf.Resync, ns); err != nil {
 			zap.L().Fatal("watch nodes errored", zap.Error(err))
 		}
