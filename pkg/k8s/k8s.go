@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/jrockway/opinionated-server/client"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/prometheus/client_golang/prometheus"
@@ -298,7 +300,9 @@ func WatchNodes(ctx context.Context, master, kubeconfig string, resync time.Dura
 	if err != nil {
 		return fmt.Errorf("kubernetes: build config: %w", err)
 	}
-
+	config.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
+		return client.WrapRoundTripper(rt)
+	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("kubernetes: new client: %w", err)
