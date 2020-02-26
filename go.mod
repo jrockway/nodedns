@@ -5,7 +5,7 @@ go 1.13
 require (
 	github.com/digitalocean/godo v1.30.0
 	github.com/google/go-cmp v0.4.0
-	github.com/jrockway/opinionated-server v0.0.6
+	github.com/jrockway/opinionated-server v0.0.8
 	github.com/opentracing-contrib/go-stdlib v0.0.0-20190519235532-cf7a6c988dc9
 	github.com/opentracing/opentracing-go v1.1.0
 	github.com/prometheus/client_golang v1.4.1

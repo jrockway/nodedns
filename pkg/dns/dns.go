@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/digitalocean/godo"
-	"github.com/opentracing-contrib/go-stdlib/nethttp"
+	"github.com/jrockway/opinionated-server/client"
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -66,19 +66,16 @@ type Config struct {
 	TTL time.Duration `long:"ttl" env:"DNS_TTL" description:"The TTL to apply to newly-created records." default:"60s"`
 }
 
-// transport is an http.RoundTripper that adds the DO token to each request, and traces the request
-// with opentracing.
+// transport is an http.RoundTripper that adds the DO token to each request.
 type transport struct {
-	Token            *oauth2.Token
-	nethttpTransport *nethttp.Transport
+	Token      *oauth2.Token
+	underlying http.RoundTripper
 }
 
 // RoundTrip implements http.RoundTripper.
-func (t *transport) RoundTrip(orig *http.Request) (*http.Response, error) {
-	req, tr := nethttp.TraceRequest(opentracing.GlobalTracer(), orig)
+func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.Token.SetAuthHeader(req)
-	defer tr.Finish()
-	return t.nethttpTransport.RoundTrip(req)
+	return t.underlying.RoundTrip(req)
 }
 
 // Client is a DigitalOcean API client configured to use opentracing.
@@ -95,7 +92,7 @@ func NewClient(ctx context.Context, c *Config) (*Client, error) {
 			Token: &oauth2.Token{
 				AccessToken: c.PAToken,
 			},
-			nethttpTransport: &nethttp.Transport{},
+			underlying: client.WrapRoundTripper(nil),
 		},
 	}
 	godoClient := godo.NewClient(httpClient)
