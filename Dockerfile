@@ -1,4 +1,4 @@
-FROM golang:1.14 AS build
+FROM golang:1.16 AS build
 WORKDIR /nodedns
 COPY go.mod go.sum /nodedns/
 RUN go mod download
